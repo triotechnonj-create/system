@@ -3,7 +3,7 @@ import {
   Plus, Search, BarChart2, DollarSign, Users, 
   Save, Download, Trash2, FileText, ShieldAlert, 
   Mail, Clock, CheckCircle, Edit, X, Lock, LogOut, UserPlus, Key, Eye, EyeOff, RefreshCw,
-  ChevronLeft, ChevronRight, PieChart as PieIcon
+  ChevronLeft, ChevronRight, PieChart as PieIcon, AlertCircle
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, Cell
@@ -18,6 +18,16 @@ import {
   getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged 
 } from 'firebase/auth';
 
+// --- 設定區塊 (修正為環境變數以支援預覽) ---
+// 注意：若您要部署到 Vercel，請將下方兩行改回您自己的 const firebaseConfig = { ... };
+const firebaseConfig = JSON.parse(__firebase_config);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// 初始化
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
 // --- 常數設定 ---
 const INITIAL_ENGINEERS = ['Ryder', 'Sian', 'Peggy', 'Ken', 'Jc', 'JB'];
 const PROJECT_YEARS = ['114', '115', '116', '117', '118'];
@@ -25,7 +35,6 @@ const PROJECT_STATUSES = ['進行中', '保固中', '過保固'];
 const BANKS = ['兆豐銀行', '臺灣銀行'];
 const ITEMS_PER_PAGE = 10;
 
-// 超級管理員預設資料 (用於資料庫初始化)
 const SUPER_ADMIN = {
   username: 'triotechno',
   email: 'admin@triotechno.com',
@@ -34,7 +43,6 @@ const SUPER_ADMIN = {
 };
 const DEFAULT_ADMIN_PASS = 'tri57666';
 
-// 工程師顏色對應
 const ENGINEER_COLORS = {
   'Ryder': 'bg-red-100 text-red-800 border-red-200',
   'Sian': 'bg-orange-100 text-orange-800 border-orange-200',
@@ -46,29 +54,6 @@ const ENGINEER_COLORS = {
 };
 
 const getEngineerColor = (name) => ENGINEER_COLORS[name] || ENGINEER_COLORS['Other'];
-
-const TYPE_COLORS = {
-  '新專案': 'text-rose-600 bg-rose-50 border-rose-200',
-  '擴充專案': 'text-indigo-600 bg-indigo-50 border-indigo-200',
-  '維護案': 'text-teal-600 bg-teal-50 border-teal-200'
-};
-
-const firebaseConfig = {
-  apiKey: "AIzaSyAuQBpymBdgI94WBUwu_AMYRRY8Fxw2Kg8",
-  authDomain: "triotchno-jb.firebaseapp.com",
-  projectId: "triotchno-jb",
-  storageBucket: "triotchno-jb.firebasestorage.app",
-  messagingSenderId: "915013814914",
-  appId: "1:915013814914:web:5c89c35901366a2671829b",
-  measurementId: "G-X44HE0CPP5"
-};
-// 初始化
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-
-// 設定一個固定的 App ID (用於資料庫路徑)
-const appId = 'company-pms-v1'; 
 
 // --- 輔助函式 ---
 const generateRandomPassword = () => {
@@ -146,15 +131,13 @@ const Pagination = ({ totalItems, itemsPerPage, currentPage, onPageChange }) => 
 
 // --- 主應用程式 ---
 const App = () => {
-  // --- Firebase & Auth State ---
-  const [firebaseUser, setFirebaseUser] = useState(null); // Firebase 連線狀態
-  const [currentUser, setCurrentUser] = useState(null);   // 系統登入使用者 (App層級)
+  const [firebaseUser, setFirebaseUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authError, setAuthError] = useState(null); // 新增：錯誤狀態
   
-  // --- Data State (From Firestore) ---
   const [users, setUsers] = useState([]);
   const [projects, setProjects] = useState([]);
   
-  // --- UI State ---
   const [isLoginView, setIsLoginView] = useState(true);
   const [isChangePasswordView, setIsChangePasswordView] = useState(false);
   const [activeTab, setActiveTab] = useState('list');
@@ -165,12 +148,10 @@ const App = () => {
   const [filterYear, setFilterYear] = useState('114');
   const [editingId, setEditingId] = useState(null);
 
-  // --- Pagination ---
   const [listPage, setListPage] = useState(1);
   const [warrantyPage, setWarrantyPage] = useState(1);
   const [adminPage, setAdminPage] = useState(1);
 
-  // --- Login Form ---
   const [loginUser, setLoginUser] = useState('');
   const [loginPass, setLoginPass] = useState('');
   const [captchaValid, setCaptchaValid] = useState(false);
@@ -178,62 +159,66 @@ const App = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
 
-  // --- 1. Firebase Auth Initialization ---
+  // --- 1. Firebase Auth ---
   useEffect(() => {
     const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth Error:", error);
+        setAuthError(error.message);
       }
     };
     initAuth();
+    
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setFirebaseUser(user);
+      if (user) {
+        setFirebaseUser(user);
+        setAuthError(null);
+      }
     });
     return () => unsubscribe();
   }, []);
 
-  // --- 2. Firestore Listeners (Real-time Sync) ---
+  // --- 2. Firestore Listeners ---
   useEffect(() => {
     if (!firebaseUser) return;
 
-    // Listen to Projects
-    const projectsRef = collection(db, 'artifacts', appId, 'public', 'data', 'projects');
-    // Using simple query, sorting manually in code to avoid index issues in prototype
-    const unsubProjects = onSnapshot(projectsRef, (snapshot) => {
-      const loadedProjects = snapshot.docs.map(doc => ({
-        firestoreId: doc.id,
-        ...doc.data()
-      }));
-      // Sort by creation or ID if needed, here we just trust the order or sort by ID descending logic if we had numeric IDs
-      // For now, let's just reverse to show newest first if they were added chronologically
-      setProjects(loadedProjects); 
-    });
+    try {
+      const projectsRef = collection(db, 'artifacts', appId, 'public', 'data', 'projects');
+      const unsubProjects = onSnapshot(projectsRef, (snapshot) => {
+        const loadedProjects = snapshot.docs.map(doc => ({ firestoreId: doc.id, ...doc.data() }));
+        // 簡單排序: 依照 ID 倒序
+        loadedProjects.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
+        setProjects(loadedProjects); 
+      }, (err) => {
+        console.error("Projects Listener Error:", err);
+        setAuthError("讀取專案失敗: " + err.message);
+      });
 
-    // Listen to Users
-    const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
-    const unsubUsers = onSnapshot(usersRef, (snapshot) => {
-      const loadedUsers = snapshot.docs.map(doc => ({
-        firestoreId: doc.id,
-        ...doc.data()
-      }));
-      
-      // Auto-Seed Admin if empty
-      if (loadedUsers.length === 0) {
-        addDoc(usersRef, { ...SUPER_ADMIN, password: DEFAULT_ADMIN_PASS });
-      } else {
-        setUsers(loadedUsers);
-      }
-    });
+      const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
+      const unsubUsers = onSnapshot(usersRef, (snapshot) => {
+        const loadedUsers = snapshot.docs.map(doc => ({ firestoreId: doc.id, ...doc.data() }));
+        if (loadedUsers.length === 0) {
+          addDoc(usersRef, { ...SUPER_ADMIN, password: DEFAULT_ADMIN_PASS });
+        } else {
+          setUsers(loadedUsers);
+        }
+      }, (err) => {
+        console.error("Users Listener Error:", err);
+        setAuthError("讀取使用者失敗: " + err.message);
+      });
 
-    return () => {
-      unsubProjects();
-      unsubUsers();
-    };
+      return () => { unsubProjects(); unsubUsers(); };
+    } catch (e) {
+      setAuthError("初始化監聽失敗: " + e.message);
+    }
   }, [firebaseUser]);
 
-  // --- Helper ---
   const getDaysRemaining = (endDateStr) => {
     if (!endDateStr) return -999;
     const end = new Date(endDateStr);
@@ -249,11 +234,7 @@ const App = () => {
       if (p.hasWarranty && p.warrantyEnd) {
         const days = getDaysRemaining(p.warrantyEnd);
         if (days <= 180 && days > -30) {
-           newLogs.push({
-             id: p.id + days, // simple unique key
-             message: `[系統自動通知] 專案 ${p.id} 保固即將於 ${days} 天後到期。已發信至 Jason@triotechno.com`,
-             time: new Date().toLocaleTimeString()
-           });
+           newLogs.push({ id: p.id + days, message: `[系統自動通知] 專案 ${p.id} 保固即將於 ${days} 天後到期。已發信至 Jason@triotechno.com`, time: new Date().toLocaleTimeString() });
         }
       }
     });
@@ -262,55 +243,29 @@ const App = () => {
 
   useEffect(() => { setListPage(1); }, [searchTerm, filterEng, filterStatus]);
 
-  // --- Handlers: Auth ---
   const handleLogin = (e) => {
     e.preventDefault();
     if (!captchaValid) return alert('驗證碼錯誤');
-    
-    // Check against Firestore Users
     const foundUser = users.find(u => (u.username === loginUser || u.email === loginUser) && u.password === loginPass);
-    
     if (foundUser) {
-      if (foundUser.isFirstLogin) {
-        setCurrentUser(foundUser); 
-        setIsLoginView(false); 
-        setIsChangePasswordView(true);
-      } else {
-        setCurrentUser(foundUser); 
-        setIsLoginView(false); 
-        setActiveTab('list');
-      }
-    } else {
-      alert('帳號或密碼錯誤');
-    }
+      if (foundUser.isFirstLogin) { setCurrentUser(foundUser); setIsLoginView(false); setIsChangePasswordView(true); } 
+      else { setCurrentUser(foundUser); setIsLoginView(false); setActiveTab('list'); }
+    } else alert('帳號或密碼錯誤');
   };
 
   const handleChangePassword = async (e) => {
     e.preventDefault();
     if (newPassword !== confirmPassword) return alert('兩次輸入的密碼不一致');
     if (!validateWeakPassword(newPassword)) return alert('密碼強度不足');
-    
     try {
       const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.firestoreId);
-      await updateDoc(userRef, {
-        password: newPassword,
-        isFirstLogin: false
-      });
-      alert('密碼修改成功');
-      // Optimistic update
-      setCurrentUser({ ...currentUser, isFirstLogin: false });
-      setIsChangePasswordView(false); 
-      setActiveTab('list');
-    } catch (err) {
-      alert('修改失敗: ' + err.message);
-    }
+      await updateDoc(userRef, { password: newPassword, isFirstLogin: false });
+      alert('密碼修改成功'); setCurrentUser({ ...currentUser, isFirstLogin: false }); setIsChangePasswordView(false); setActiveTab('list');
+    } catch (err) { alert('修改失敗: ' + err.message); }
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null); setIsLoginView(true); setLoginUser(''); setLoginPass(''); setCaptchaValid(false);
-  };
+  const handleLogout = () => { setCurrentUser(null); setIsLoginView(true); setLoginUser(''); setLoginPass(''); setCaptchaValid(false); };
 
-  // --- Handlers: Data ---
   const initialFormState = {
     projectYear: '114', status: '進行中', invoiceDate: new Date().toISOString().split('T')[0], invoiceNumber: '', paymentDate: '', paymentBank: '',
     name: '', type: '新專案', amount: '', school: '', engineer: '', customEngineer: '',
@@ -352,119 +307,67 @@ const App = () => {
   
   const handleDelete = async (id, firestoreId) => { 
     if (window.confirm(`確定刪除 ${id}?`)) {
-      try {
-        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', firestoreId));
-      } catch(err) {
-        console.error(err);
-        alert("刪除失敗");
-      }
+      try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', firestoreId)); } catch(err) { console.error(err); alert("刪除失敗"); }
     }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!firebaseUser) return alert("尚未連線到資料庫");
-
     const finalEngineer = formData.engineer === 'Other' ? formData.customEngineer : formData.engineer;
     const projectData = { ...formData, engineer: finalEngineer, amount: Number(formData.amount), warrantyBondAmount: Number(formData.warrantyBondAmount) || 0, maintenanceCost: Number(formData.maintenanceCost) || 0, otherCost: Number(formData.otherCost) || 0, ...calculations };
-    
     try {
       if (editingId) {
         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'projects', editingId);
-        await updateDoc(docRef, projectData);
-        alert(`更新成功`); 
-        setEditingId(null);
+        await updateDoc(docRef, projectData); alert(`更新成功`); setEditingId(null);
       } else {
-        // Generate simple ID P000X based on length (Warning: Race condition possible in high concurrency)
-        // Find max ID number from existing projects for safer increment
         let maxId = 0;
-        projects.forEach(p => {
-           const num = parseInt(p.id.substring(1));
-           if (!isNaN(num) && num > maxId) maxId = num;
-        });
+        projects.forEach(p => { const num = parseInt(p.id.substring(1)); if (!isNaN(num) && num > maxId) maxId = num; });
         const newId = `P${String(maxId + 1).padStart(4, '0')}`;
-        
         const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'projects');
-        await addDoc(colRef, { id: newId, ...projectData });
-        alert(`建立成功 ${newId}`);
+        await addDoc(colRef, { id: newId, ...projectData }); alert(`建立成功 ${newId}`);
       }
-      setFormData(initialFormState); 
-      setActiveTab('list');
-    } catch(err) {
-      console.error(err);
-      alert("儲存失敗: " + err.message);
-    }
+      setFormData(initialFormState); setActiveTab('list');
+    } catch(err) { console.error(err); alert("儲存失敗: " + err.message); }
   };
 
-  // --- Admin: Create User ---
   const [newUserEmail, setNewUserEmail] = useState('');
   const handleCreateUser = async (e) => {
     e.preventDefault();
     if (users.find(u => u.email === newUserEmail)) return alert('Email 已存在');
-    
     const randomPass = generateRandomPassword();
     const newUser = { username: newUserEmail, email: newUserEmail, password: randomPass, role: 'user', isFirstLogin: true };
-    
     try {
       const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
       await addDoc(colRef, newUser);
-      
       window.location.href = `mailto:${newUserEmail}?subject=${encodeURIComponent("【專案管理系統】您的帳號已建立")}&body=${encodeURIComponent(`Hi,\n\n您的帳號已建立。\n帳號: ${newUserEmail}\n密碼: ${randomPass}\n\n請登入後立即修改密碼。`)}`;
-      setNewUserEmail(''); 
-      alert(`已建立並呼叫郵件軟體。`);
-    } catch(err) {
-      alert("建立失敗: " + err.message);
-    }
+      setNewUserEmail(''); alert(`已建立並呼叫郵件軟體。`);
+    } catch(err) { alert("建立失敗: " + err.message); }
   };
 
-  // --- Filtering & Stats ---
   const filteredList = useMemo(() => projects.filter(p => {
-    const matchText = 
-      p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      p.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.invoiceNumber?.includes(searchTerm) || 
-      p.invoiceDate.includes(searchTerm);
+    const matchText = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.id.toLowerCase().includes(searchTerm.toLowerCase()) || p.invoiceNumber?.includes(searchTerm) || p.invoiceDate.includes(searchTerm);
     const matchEng = filterEng ? p.engineer === filterEng : true;
     const matchStatus = filterStatus ? p.status === filterStatus : true;
     return matchText && matchEng && matchStatus;
   }), [projects, searchTerm, filterEng, filterStatus]);
 
   const warrantyAlertList = useMemo(() => projects.filter(p => p.hasWarranty).sort((a, b) => new Date(a.warrantyEnd) - new Date(b.warrantyEnd)), [projects]);
-
-  const getPaginatedData = (data, page) => {
-    const start = (page - 1) * ITEMS_PER_PAGE;
-    const end = start + ITEMS_PER_PAGE;
-    return data.slice(start, end);
-  };
-
+  const getPaginatedData = (data, page) => data.slice((page - 1) * ITEMS_PER_PAGE, (page - 1) * ITEMS_PER_PAGE + ITEMS_PER_PAGE);
   const paginatedList = getPaginatedData(filteredList, listPage);
   const paginatedWarranty = getPaginatedData(warrantyAlertList, warrantyPage);
   const paginatedUsers = getPaginatedData(users, adminPage);
 
   const stats = useMemo(() => {
     const yearProjects = projects.filter(p => p.projectYear === filterYear);
-    const schoolMap = {}; 
-    const engNetMap = {};
-    const typeMap = {};
-
-    yearProjects.forEach(p => { 
-        schoolMap[p.school] = (schoolMap[p.school] || 0) + p.netProfit; 
-        engNetMap[p.engineer] = (engNetMap[p.engineer] || 0) + p.netProfit; 
-        typeMap[p.type] = (typeMap[p.type] || 0) + p.netProfit;
-    });
-
+    const schoolMap = {}; const engNetMap = {}; const typeMap = {};
+    yearProjects.forEach(p => { schoolMap[p.school] = (schoolMap[p.school] || 0) + p.netProfit; engNetMap[p.engineer] = (engNetMap[p.engineer] || 0) + p.netProfit; typeMap[p.type] = (typeMap[p.type] || 0) + p.netProfit; });
     const schoolData = Object.entries(schoolMap).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
     const engData = Object.entries(engNetMap).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
     const typeData = Object.entries(typeMap).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
-
     const totalSalesProfit = yearProjects.reduce((acc, curr) => acc + curr.salesProfit, 0);
     const totalEngProfit = yearProjects.reduce((acc, curr) => acc + curr.engProfit, 0);
-    
-    return { 
-        schoolData, engData, typeData, 
-        splitData: [{ name: '業務端總利潤', value: totalSalesProfit }, { name: '工程端總利潤', value: totalEngProfit }], 
-        count: yearProjects.length 
-    };
+    return { schoolData, engData, typeData, splitData: [{ name: '業務端總利潤', value: totalSalesProfit }, { name: '工程端總利潤', value: totalEngProfit }], count: yearProjects.length };
   }, [projects, filterYear]);
 
   const handleExportExcel = () => {
@@ -490,15 +393,24 @@ const App = () => {
       <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md border border-stone-200">
         <div className="flex justify-center mb-6"><div className="bg-amber-600 p-3 rounded-full"><DollarSign className="w-8 h-8 text-white" /></div></div>
         <h1 className="text-2xl font-bold text-center text-stone-700 mb-6">專案管理系統</h1>
-        {firebaseUser ? (
+        {authError ? (
+          <div className="bg-red-50 text-red-600 p-4 rounded-lg mb-4 text-sm border border-red-200 flex items-start gap-2">
+            <AlertCircle className="w-5 h-5 flex-shrink-0" />
+            <div>
+              <p className="font-bold">資料庫連線失敗</p>
+              <p>{authError}</p>
+              <p className="mt-2 text-xs text-stone-500">請確認 Firebase Console &gt; Authentication &gt; Sign-in method 中的「Anonymous」已啟用。</p>
+            </div>
+          </div>
+        ) : !firebaseUser ? (
+          <div className="text-center text-stone-500 py-4">連線到雲端資料庫中...</div>
+        ) : (
           <form onSubmit={handleLogin} className="space-y-4">
             <div><label className="block text-sm font-medium text-stone-600 mb-1">帳號 / Email</label><input type="text" value={loginUser} onChange={e => setLoginUser(e.target.value)} className="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-amber-500" required /></div>
             <div className="relative"><label className="block text-sm font-medium text-stone-600 mb-1">密碼</label><input type={showPass ? "text" : "password"} value={loginPass} onChange={e => setLoginPass(e.target.value)} className="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-amber-500" required /><button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-2 top-8 text-gray-400">{showPass ? <EyeOff size={16}/> : <Eye size={16}/>}</button></div>
             <div><label className="block text-sm font-medium text-stone-600 mb-1">驗證碼</label><Captcha onVerify={setCaptchaValid} /></div>
             <button type="submit" className="w-full bg-amber-600 text-white py-2 rounded hover:bg-amber-700 transition font-medium">登入系統</button>
           </form>
-        ) : (
-          <div className="text-center text-stone-500 py-4">連線到雲端資料庫中...</div>
         )}
         <div className="mt-4 text-center text-xs text-stone-400">預設管理員: triotechno / tri57666</div>
       </div>
