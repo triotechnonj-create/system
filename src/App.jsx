@@ -18,89 +18,57 @@ import {
   getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged 
 } from 'firebase/auth';
 
-// --- Error Boundary (錯誤攔截元件) ---
-class ErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, error: null, errorInfo: null };
-  }
-
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error, errorInfo) {
-    console.error("React Crash:", error, errorInfo);
-    this.setState({ errorInfo });
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="min-h-screen bg-red-50 flex items-center justify-center p-6">
-          <div className="bg-white p-8 rounded-xl shadow-xl max-w-2xl w-full border border-red-200">
-            <h1 className="text-2xl font-bold text-red-600 mb-4 flex items-center gap-2">
-              <AlertCircle className="w-8 h-8"/> 系統發生錯誤 (System Error)
-            </h1>
-            <p className="text-gray-700 mb-4">很抱歉，應用程式在執行時發生了意外錯誤。請將以下錯誤訊息提供給開發人員：</p>
-            <div className="bg-gray-900 text-red-300 p-4 rounded-lg overflow-x-auto text-sm font-mono leading-relaxed mb-4">
-              {this.state.error && this.state.error.toString()}
-              <br/>
-              {this.state.errorInfo && this.state.errorInfo.componentStack}
-            </div>
-            <button 
-              onClick={() => window.location.reload()}
-              className="bg-red-600 text-white px-6 py-2 rounded hover:bg-red-700 transition"
-            >
-              重新整理頁面
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-// --- Firebase Configuration & Initialization ---
+// --- Global Variables for Firebase ---
 let db, auth, currentAppId;
 let firebaseInitialized = false;
 let initError = null;
 
+// --- Firebase Initialization Logic (Top Level) ---
 try {
   let firebaseConfig;
   
-  // 1. 偵測環境
+  // 1. 偵測是否為 Canvas 預覽環境
   if (typeof __firebase_config !== 'undefined') {
-    // Canvas 預覽環境
     firebaseConfig = JSON.parse(__firebase_config);
     currentAppId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    
+    // 初始化 (預覽環境通常設定是正確的)
+    const app = initializeApp(firebaseConfig);
+    db = getFirestore(app);
+    auth = getAuth(app);
+    firebaseInitialized = true;
+
   } else {
-    // 2. Vercel 正式環境 (請在此填入您的設定)
+    // 2. Vercel 正式環境
+    // [⚠️ 請在此處填入您的真實設定 ⚠️]
+    // 這些資訊在 Firebase Console > Project settings > General > Your apps (SDK setup and configuration)
     firebaseConfig = {
-      apiKey: "請填入您的API_KEY", // <--- 請確保這裡已替換為真實 Key
-      authDomain: "請填入您的專案ID.firebaseapp.com",
-      projectId: "請填入您的專案ID",
-      storageBucket: "請填入您的專案ID.firebasestorage.app",
-      messagingSenderId: "請填入您的SENDER_ID",
-      appId: "請填入您的APP_ID"
+      apiKey: "AIzaSyAuQBpymBdgI94WBUwu_AMYRRY8Fxw2Kg8",
+      authDomain: "triotchno-jb.firebaseapp.com",
+      projectId: "triotchno-jb",
+      storageBucket: "triotchno-jb.firebasestorage.app",
+      messagingSenderId: "915013814914",
+      appId: "1:915013814914:web:5c89c35901366a2671829b",
+      measurementId: "G-X44HE0CPP5"
     };
     currentAppId = 'company-pms-v1'; 
-  }
-  
-  // 檢查是否已填寫設定 (若 apiKey 仍為預設文字，視為未設定)
-  if (firebaseConfig.apiKey && firebaseConfig.apiKey.includes("請填入")) {
-    throw new Error("Firebase 設定尚未填寫 (請修改 src/App.jsx)");
-  }
 
-  // 初始化 Firebase
-  const app = initializeApp(firebaseConfig);
-  db = getFirestore(app);
-  auth = getAuth(app);
-  firebaseInitialized = true;
+    // 檢查使用者是否已經替換了預設文字
+    if (firebaseConfig.apiKey === "請填入您的API_KEY" || firebaseConfig.apiKey.includes("請填入")) {
+      // 故意不初始化，讓 AppContent 顯示設定引導畫面
+      console.warn("Firebase config is missing in production mode.");
+      initError = "設定尚未填寫";
+    } else {
+      // 設定已填寫，嘗試初始化
+      const app = initializeApp(firebaseConfig);
+      db = getFirestore(app);
+      auth = getAuth(app);
+      firebaseInitialized = true;
+    }
+  }
 
 } catch (e) {
-  console.error("Firebase Init Error:", e);
+  console.error("Firebase Init Crash:", e);
   initError = e.message;
 }
 
@@ -130,12 +98,6 @@ const ENGINEER_COLORS = {
 };
 
 const getEngineerColor = (name) => ENGINEER_COLORS[name] || ENGINEER_COLORS['Other'];
-
-const TYPE_COLORS = {
-  '新專案': 'text-rose-600 bg-rose-50 border-rose-200',
-  '擴充專案': 'text-indigo-600 bg-indigo-50 border-indigo-200',
-  '維護案': 'text-teal-600 bg-teal-50 border-teal-200'
-};
 
 // --- Helper Functions ---
 const generateRandomPassword = () => {
@@ -211,8 +173,8 @@ const Pagination = ({ totalItems, itemsPerPage, currentPage, onPageChange }) => 
   );
 };
 
-// --- Main App Component ---
-const AppContent = () => {
+// --- App Component ---
+const App = () => {
   const [firebaseUser, setFirebaseUser] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [authError, setAuthError] = useState(null);
@@ -241,9 +203,43 @@ const AppContent = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
 
-  // 如果 Firebase 初始化失敗，顯示錯誤畫面
+  // --- 安全檢查：如果未初始化，顯示引導畫面 (不崩潰) ---
   if (!firebaseInitialized) {
-    throw new Error(initError || "Firebase 未知初始化錯誤");
+    return (
+      <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4 font-sans">
+        <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-lg border-2 border-red-100">
+          <div className="flex items-center gap-3 text-red-600 mb-6">
+            <Settings className="w-10 h-10" />
+            <h1 className="text-2xl font-bold">系統尚未完成設定</h1>
+          </div>
+          
+          <div className="space-y-4 text-stone-600">
+            <p className="font-medium">您的網站已成功部署到 Vercel，但還差最後一步！</p>
+            
+            <div className="bg-stone-50 p-4 rounded-lg border border-stone-200 text-sm">
+              <p className="mb-2"><strong>原因：</strong>程式碼中的 Firebase 設定仍為預設值。</p>
+              <code className="block bg-gray-100 p-2 rounded text-xs text-gray-500 break-all">
+                apiKey: "請填入您的API_KEY"
+              </code>
+            </div>
+
+            <p><strong>請執行以下步驟修復：</strong></p>
+            <ol className="list-decimal pl-5 space-y-2 text-sm">
+              <li>回到您的電腦，開啟專案資料夾中的 <code>src/App.jsx</code>。</li>
+              <li>找到約 <strong>第 47 行</strong> 的 <code>firebaseConfig</code> 區塊。</li>
+              <li>將 <code>apiKey</code>, <code>projectId</code> 等欄位替換為您 Firebase Console 中的真實資料。</li>
+              <li>儲存檔案，並執行 <code>git add .</code> &gt; <code>git commit</code> &gt; <code>git push</code>。</li>
+            </ol>
+          </div>
+          
+          <div className="mt-8 pt-4 border-t text-center">
+            <button onClick={() => window.location.reload()} className="text-stone-500 hover:text-stone-800 text-sm flex items-center justify-center gap-1 mx-auto">
+              <RefreshCw className="w-4 h-4"/> 已更新？點擊重新整理
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   // --- 1. Firebase Auth ---
@@ -688,15 +684,6 @@ const AppContent = () => {
         )}
       </main>
     </div>
-  );
-};
-
-// Wrap AppContent with ErrorBoundary
-const App = () => {
-  return (
-    <ErrorBoundary>
-      <AppContent />
-    </ErrorBoundary>
   );
 };
 
