@@ -3,7 +3,7 @@ import {
   Plus, Search, BarChart2, DollarSign, Users, 
   Save, Download, Trash2, FileText, ShieldAlert, 
   Mail, Clock, CheckCircle, Edit, X, Lock, LogOut, UserPlus, Key, Eye, EyeOff, RefreshCw,
-  ChevronLeft, ChevronRight, PieChart as PieIcon, AlertCircle
+  ChevronLeft, ChevronRight, PieChart as PieIcon, AlertCircle, Settings
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, Cell
@@ -18,15 +18,48 @@ import {
   getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged 
 } from 'firebase/auth';
 
-// --- 設定區塊 (修正為環境變數以支援預覽) ---
-// 注意：若您要部署到 Vercel，請將下方兩行改回您自己的 const firebaseConfig = { ... };
-const firebaseConfig = JSON.parse(__firebase_config);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+// --- Firebase Configuration Setup ---
+let firebaseConfig;
+let appId;
+let firebaseInitialized = false;
+let initError = null;
 
-// 初始化
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+try {
+  // 1. 嘗試偵測是否為 Canvas 預覽環境
+  if (typeof __firebase_config !== 'undefined') {
+    firebaseConfig = JSON.parse(__firebase_config);
+    appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  } else {
+    // 2. 如果是 Vercel 正式環境，請在此填入您的 Firebase 設定
+    // [重要] 請將下方的字串替換為您 Firebase Console 中的真實設定
+    firebaseConfig = {
+      apiKey: "AIzaSyAuQBpymBdgI94WBUwu_AMYRRY8Fxw2Kg8"
+      authDomain: "triotchno-jb.firebaseapp.com",
+      projectId: "triotchno-jb",
+      storageBucket: "triotchno-jb.firebasestorage.app",
+      messagingSenderId: "915013814914",
+      appId:"1:915013814914:web:5c89c35901366a2671829b",
+    };
+    appId = 'company-pms-v1'; 
+  }
+  
+  // 簡單檢查設定是否已填寫 (避免 Vercel 上一片空白)
+  if (firebaseConfig.apiKey === "請填入您的API_KEY") {
+    throw new Error("Firebase 設定尚未填寫");
+  }
+
+  // 初始化 Firebase
+  const app = initializeApp(firebaseConfig);
+  // 匯出全域變數供 Component 使用
+  window._db = getFirestore(app);
+  window._auth = getAuth(app);
+  window._appId = appId;
+  firebaseInitialized = true;
+
+} catch (e) {
+  console.warn("Firebase 初始化暫停或失敗:", e.message);
+  initError = e.message;
+}
 
 // --- 常數設定 ---
 const INITIAL_ENGINEERS = ['Ryder', 'Sian', 'Peggy', 'Ken', 'Jc', 'JB'];
@@ -133,7 +166,7 @@ const Pagination = ({ totalItems, itemsPerPage, currentPage, onPageChange }) => 
 const App = () => {
   const [firebaseUser, setFirebaseUser] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
-  const [authError, setAuthError] = useState(null); // 新增：錯誤狀態
+  const [authError, setAuthError] = useState(null);
   
   const [users, setUsers] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -158,6 +191,34 @@ const App = () => {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
+
+  // 如果設定沒填好，直接顯示錯誤畫面
+  if (!firebaseInitialized) {
+    return (
+      <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-lg border border-red-200">
+          <div className="flex items-center gap-3 text-red-600 mb-4">
+            <Settings className="w-8 h-8" />
+            <h1 className="text-2xl font-bold">系統設定未完成</h1>
+          </div>
+          <p className="text-gray-600 mb-4">
+            偵測到 Firebase 設定檔尚未填寫或不完整，因此無法連線到資料庫。
+          </p>
+          <div className="bg-stone-50 p-4 rounded text-sm font-mono text-stone-700 mb-4 overflow-x-auto">
+            {initError || "請檢查 App.jsx 第 23-30 行的 firebaseConfig 設定。"}
+          </div>
+          <p className="text-sm text-gray-500">
+            請回到 VS Code 開啟 <code>src/App.jsx</code>，將您的 Firebase API Key 等資訊填入後，重新 Push 到 GitHub。
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // 使用全域變數 (避免重新 render 時 undefined)
+  const db = window._db;
+  const auth = window._auth;
+  const currentAppId = window._appId;
 
   // --- 1. Firebase Auth ---
   useEffect(() => {
@@ -189,10 +250,9 @@ const App = () => {
     if (!firebaseUser) return;
 
     try {
-      const projectsRef = collection(db, 'artifacts', appId, 'public', 'data', 'projects');
+      const projectsRef = collection(db, 'artifacts', currentAppId, 'public', 'data', 'projects');
       const unsubProjects = onSnapshot(projectsRef, (snapshot) => {
         const loadedProjects = snapshot.docs.map(doc => ({ firestoreId: doc.id, ...doc.data() }));
-        // 簡單排序: 依照 ID 倒序
         loadedProjects.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
         setProjects(loadedProjects); 
       }, (err) => {
@@ -200,7 +260,7 @@ const App = () => {
         setAuthError("讀取專案失敗: " + err.message);
       });
 
-      const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
+      const usersRef = collection(db, 'artifacts', currentAppId, 'public', 'data', 'users');
       const unsubUsers = onSnapshot(usersRef, (snapshot) => {
         const loadedUsers = snapshot.docs.map(doc => ({ firestoreId: doc.id, ...doc.data() }));
         if (loadedUsers.length === 0) {
@@ -258,7 +318,7 @@ const App = () => {
     if (newPassword !== confirmPassword) return alert('兩次輸入的密碼不一致');
     if (!validateWeakPassword(newPassword)) return alert('密碼強度不足');
     try {
-      const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.firestoreId);
+      const userRef = doc(db, 'artifacts', currentAppId, 'public', 'data', 'users', currentUser.firestoreId);
       await updateDoc(userRef, { password: newPassword, isFirstLogin: false });
       alert('密碼修改成功'); setCurrentUser({ ...currentUser, isFirstLogin: false }); setIsChangePasswordView(false); setActiveTab('list');
     } catch (err) { alert('修改失敗: ' + err.message); }
@@ -307,7 +367,7 @@ const App = () => {
   
   const handleDelete = async (id, firestoreId) => { 
     if (window.confirm(`確定刪除 ${id}?`)) {
-      try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', firestoreId)); } catch(err) { console.error(err); alert("刪除失敗"); }
+      try { await deleteDoc(doc(db, 'artifacts', currentAppId, 'public', 'data', 'projects', firestoreId)); } catch(err) { console.error(err); alert("刪除失敗"); }
     }
   };
 
@@ -318,13 +378,13 @@ const App = () => {
     const projectData = { ...formData, engineer: finalEngineer, amount: Number(formData.amount), warrantyBondAmount: Number(formData.warrantyBondAmount) || 0, maintenanceCost: Number(formData.maintenanceCost) || 0, otherCost: Number(formData.otherCost) || 0, ...calculations };
     try {
       if (editingId) {
-        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'projects', editingId);
+        const docRef = doc(db, 'artifacts', currentAppId, 'public', 'data', 'projects', editingId);
         await updateDoc(docRef, projectData); alert(`更新成功`); setEditingId(null);
       } else {
         let maxId = 0;
         projects.forEach(p => { const num = parseInt(p.id.substring(1)); if (!isNaN(num) && num > maxId) maxId = num; });
         const newId = `P${String(maxId + 1).padStart(4, '0')}`;
-        const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'projects');
+        const colRef = collection(db, 'artifacts', currentAppId, 'public', 'data', 'projects');
         await addDoc(colRef, { id: newId, ...projectData }); alert(`建立成功 ${newId}`);
       }
       setFormData(initialFormState); setActiveTab('list');
@@ -338,7 +398,7 @@ const App = () => {
     const randomPass = generateRandomPassword();
     const newUser = { username: newUserEmail, email: newUserEmail, password: randomPass, role: 'user', isFirstLogin: true };
     try {
-      const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
+      const colRef = collection(db, 'artifacts', currentAppId, 'public', 'data', 'users');
       await addDoc(colRef, newUser);
       window.location.href = `mailto:${newUserEmail}?subject=${encodeURIComponent("【專案管理系統】您的帳號已建立")}&body=${encodeURIComponent(`Hi,\n\n您的帳號已建立。\n帳號: ${newUserEmail}\n密碼: ${randomPass}\n\n請登入後立即修改密碼。`)}`;
       setNewUserEmail(''); alert(`已建立並呼叫郵件軟體。`);
