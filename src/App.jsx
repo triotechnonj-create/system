@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Plus, Search, BarChart2, DollarSign, Users, 
   Save, Download, Trash2, FileText, ShieldAlert, 
-  Mail, Clock, CheckCircle, Edit, X, Lock, LogOut, UserPlus, Key, Eye, EyeOff, RefreshCw,
-  ChevronLeft, ChevronRight, PieChart as PieIcon, AlertCircle, Settings
+  Mail, Clock, CheckCircle, Edit, X, LogOut, UserPlus, 
+  ChevronLeft, ChevronRight, PieChart as PieIcon, AlertCircle, Settings, LogIn
 } from 'lucide-react';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, Cell
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer
 } from 'recharts';
 
 // --- Firebase Imports ---
@@ -15,33 +15,47 @@ import {
   getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, setDoc 
 } from 'firebase/firestore';
 import { 
-  getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged 
+  getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, signInWithCustomToken 
 } from 'firebase/auth';
 
-// --- Global Variables for Firebase ---
+// --- Error Boundary ---
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null, errorInfo: null };
+  }
+  static getDerivedStateFromError(error) { return { hasError: true, error }; }
+  componentDidCatch(error, errorInfo) { console.error("React Crash:", error, errorInfo); this.setState({ errorInfo }); }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-red-50 flex items-center justify-center p-6">
+          <div className="bg-white p-8 rounded-xl shadow-xl max-w-2xl w-full border border-red-200">
+            <h1 className="text-2xl font-bold text-red-600 mb-4 flex items-center gap-2"><AlertCircle className="w-8 h-8"/> 系統發生錯誤</h1>
+            <p className="text-gray-700 mb-4">請將以下錯誤訊息提供給開發人員：</p>
+            <div className="bg-gray-900 text-red-300 p-4 rounded-lg overflow-x-auto text-sm font-mono mb-4">{this.state.error && this.state.error.toString()}</div>
+            <button onClick={() => window.location.reload()} className="bg-red-600 text-white px-6 py-2 rounded hover:bg-red-700 transition">重新整理頁面</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// --- Global Variables ---
 let db, auth, currentAppId;
 let firebaseInitialized = false;
 let initError = null;
 
-// --- Firebase Initialization Logic (Top Level) ---
+// --- Firebase Init ---
 try {
   let firebaseConfig;
-  
-  // 1. 偵測是否為 Canvas 預覽環境
   if (typeof __firebase_config !== 'undefined') {
     firebaseConfig = JSON.parse(__firebase_config);
     currentAppId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-    
-    // 初始化 (預覽環境通常設定是正確的)
-    const app = initializeApp(firebaseConfig);
-    db = getFirestore(app);
-    auth = getAuth(app);
-    firebaseInitialized = true;
-
   } else {
-    // 2. Vercel 正式環境
-    // [⚠️ 請在此處填入您的真實設定 ⚠️]
-    // 這些資訊在 Firebase Console > Project settings > General > Your apps (SDK setup and configuration)
+    // [⚠️ 請填入您的設定 ⚠️]
     firebaseConfig = {
       apiKey: "AIzaSyAuQBpymBdgI94WBUwu_AMYRRY8Fxw2Kg8",
       authDomain: "triotchno-jb.firebaseapp.com",
@@ -52,23 +66,20 @@ try {
       measurementId: "G-X44HE0CPP5"
     };
     currentAppId = 'company-pms-v1'; 
-
-    // 檢查使用者是否已經替換了預設文字
-    if (firebaseConfig.apiKey === "請填入您的API_KEY" || firebaseConfig.apiKey.includes("請填入")) {
-      // 故意不初始化，讓 AppContent 顯示設定引導畫面
-      console.warn("Firebase config is missing in production mode.");
+    if (firebaseConfig.apiKey.includes("請填入")) {
+      console.warn("Firebase config missing.");
       initError = "設定尚未填寫";
-    } else {
-      // 設定已填寫，嘗試初始化
-      const app = initializeApp(firebaseConfig);
-      db = getFirestore(app);
-      auth = getAuth(app);
-      firebaseInitialized = true;
     }
   }
 
+  if (!initError) {
+    const app = initializeApp(firebaseConfig);
+    db = getFirestore(app);
+    auth = getAuth(app);
+    firebaseInitialized = true;
+  }
 } catch (e) {
-  console.error("Firebase Init Crash:", e);
+  console.error("Init Crash:", e);
   initError = e.message;
 }
 
@@ -79,13 +90,8 @@ const PROJECT_STATUSES = ['進行中', '保固中', '過保固'];
 const BANKS = ['兆豐銀行', '臺灣銀行'];
 const ITEMS_PER_PAGE = 10;
 
-const SUPER_ADMIN = {
-  username: 'triotechno',
-  email: 'admin@triotechno.com',
-  role: 'admin',
-  isFirstLogin: false 
-};
-const DEFAULT_ADMIN_PASS = 'tri57666';
+// 超級管理員清單 (當這些 Email 登入時，強制給予 admin 權限)
+const SUPER_ADMIN_EMAILS = ['triotechno.nj@gmail.com', 'admin@triotechno.com']; // 請替換為您的 Google Email
 
 const ENGINEER_COLORS = {
   'Ryder': 'bg-red-100 text-red-800 border-red-200',
@@ -100,67 +106,6 @@ const ENGINEER_COLORS = {
 const getEngineerColor = (name) => ENGINEER_COLORS[name] || ENGINEER_COLORS['Other'];
 
 // --- Helper Functions ---
-const generateRandomPassword = () => {
-  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%";
-  let password = "";
-  for (let i = 0; i < 10; i++) {
-    password += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return password;
-};
-
-const validateWeakPassword = (password) => {
-  const regex = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]{8,}$/;
-  return regex.test(password);
-};
-
-const Captcha = ({ onVerify }) => {
-  const canvasRef = useRef(null);
-  const [code, setCode] = useState('');
-  const [input, setInput] = useState('');
-
-  const drawCaptcha = () => {
-    const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    let newCode = '';
-    for (let i = 0; i < 4; i++) newCode += chars[Math.floor(Math.random() * chars.length)];
-    setCode(newCode);
-
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, 100, 40);
-      ctx.fillStyle = '#f3f4f6';
-      ctx.fillRect(0, 0, 100, 40);
-      ctx.font = '24px Arial';
-      ctx.fillStyle = '#333';
-      ctx.textBaseline = 'middle';
-      for(let i=0; i<5; i++) {
-        ctx.strokeStyle = `rgba(0,0,0,${Math.random() * 0.3})`;
-        ctx.beginPath();
-        ctx.moveTo(Math.random()*100, Math.random()*40);
-        ctx.lineTo(Math.random()*100, Math.random()*40);
-        ctx.stroke();
-      }
-      ctx.fillText(newCode, 15, 20);
-    }
-  };
-
-  useEffect(() => { drawCaptcha(); }, []);
-
-  const handleChange = (e) => {
-    setInput(e.target.value);
-    onVerify(e.target.value.toUpperCase() === code);
-  };
-
-  return (
-    <div className="flex items-center gap-2">
-      <canvas ref={canvasRef} width="100" height="40" className="border rounded cursor-pointer" onClick={drawCaptcha} title="點擊重新產生"/>
-      <input type="text" placeholder="驗證碼" value={input} onChange={handleChange} className="border rounded p-2 w-24 text-center uppercase" />
-      <button type="button" onClick={drawCaptcha} className="p-2 text-gray-500 hover:text-gray-700"><RefreshCw className="w-4 h-4" /></button>
-    </div>
-  );
-};
-
 const Pagination = ({ totalItems, itemsPerPage, currentPage, onPageChange }) => {
   const totalPages = Math.ceil(totalItems / itemsPerPage);
   if (totalPages <= 1) return null;
@@ -173,17 +118,15 @@ const Pagination = ({ totalItems, itemsPerPage, currentPage, onPageChange }) => 
   );
 };
 
-// --- App Component ---
-const App = () => {
+// --- Main Component ---
+const AppContent = () => {
   const [firebaseUser, setFirebaseUser] = useState(null);
-  const [currentUser, setCurrentUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null); // 系統內的使用者資料 (含 role)
   const [authError, setAuthError] = useState(null);
   
-  const [users, setUsers] = useState([]);
+  const [users, setUsers] = useState([]); // Firestore 中的使用者清單
   const [projects, setProjects] = useState([]);
   
-  const [isLoginView, setIsLoginView] = useState(true);
-  const [isChangePasswordView, setIsChangePasswordView] = useState(false);
   const [activeTab, setActiveTab] = useState('list');
   const [systemLogs, setSystemLogs] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -196,73 +139,18 @@ const App = () => {
   const [warrantyPage, setWarrantyPage] = useState(1);
   const [adminPage, setAdminPage] = useState(1);
 
-  const [loginUser, setLoginUser] = useState('');
-  const [loginPass, setLoginPass] = useState('');
-  const [captchaValid, setCaptchaValid] = useState(false);
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [showPass, setShowPass] = useState(false);
+  if (!firebaseInitialized) throw new Error(initError || "Firebase 未知初始化錯誤");
 
-  // --- 安全檢查：如果未初始化，顯示引導畫面 (不崩潰) ---
-  if (!firebaseInitialized) {
-    return (
-      <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4 font-sans">
-        <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-lg border-2 border-red-100">
-          <div className="flex items-center gap-3 text-red-600 mb-6">
-            <Settings className="w-10 h-10" />
-            <h1 className="text-2xl font-bold">系統尚未完成設定</h1>
-          </div>
-          
-          <div className="space-y-4 text-stone-600">
-            <p className="font-medium">您的網站已成功部署到 Vercel，但還差最後一步！</p>
-            
-            <div className="bg-stone-50 p-4 rounded-lg border border-stone-200 text-sm">
-              <p className="mb-2"><strong>原因：</strong>程式碼中的 Firebase 設定仍為預設值。</p>
-              <code className="block bg-gray-100 p-2 rounded text-xs text-gray-500 break-all">
-                apiKey: "請填入您的API_KEY"
-              </code>
-            </div>
-
-            <p><strong>請執行以下步驟修復：</strong></p>
-            <ol className="list-decimal pl-5 space-y-2 text-sm">
-              <li>回到您的電腦，開啟專案資料夾中的 <code>src/App.jsx</code>。</li>
-              <li>找到約 <strong>第 47 行</strong> 的 <code>firebaseConfig</code> 區塊。</li>
-              <li>將 <code>apiKey</code>, <code>projectId</code> 等欄位替換為您 Firebase Console 中的真實資料。</li>
-              <li>儲存檔案，並執行 <code>git add .</code> &gt; <code>git commit</code> &gt; <code>git push</code>。</li>
-            </ol>
-          </div>
-          
-          <div className="mt-8 pt-4 border-t text-center">
-            <button onClick={() => window.location.reload()} className="text-stone-500 hover:text-stone-800 text-sm flex items-center justify-center gap-1 mx-auto">
-              <RefreshCw className="w-4 h-4"/> 已更新？點擊重新整理
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // --- 1. Firebase Auth ---
+  // --- 1. Firebase Auth Listener ---
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) {
-        console.error("Auth Error:", error);
-        setAuthError(error.message);
-      }
-    };
-    initAuth();
-    
+    // 預覽環境自動登入邏輯
+    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+      signInWithCustomToken(auth, __initial_auth_token).catch(e => setAuthError(e.message));
+    }
+
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setFirebaseUser(user);
-        setAuthError(null);
-      }
+      setFirebaseUser(user);
+      if (user) setAuthError(null);
     });
     return () => unsubscribe();
   }, []);
@@ -271,36 +159,79 @@ const App = () => {
   useEffect(() => {
     if (!firebaseUser) return;
 
+    const handleFirestoreError = (err, type) => {
+      console.error(`${type} Error:`, err);
+      if (err.message.includes("permissions") || err.code === 'permission-denied') {
+         setAuthError(`權限不足：請確認 Firestore Rules 已設為 allow read, write: if request.auth != null;`);
+      } else {
+         setAuthError(`讀取${type}失敗: ` + err.message);
+      }
+    };
+
     try {
+      // Listen to Projects
       const projectsRef = collection(db, 'artifacts', currentAppId, 'public', 'data', 'projects');
       const unsubProjects = onSnapshot(projectsRef, (snapshot) => {
         const loadedProjects = snapshot.docs.map(doc => ({ firestoreId: doc.id, ...doc.data() }));
         loadedProjects.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
         setProjects(loadedProjects); 
-      }, (err) => {
-        console.error("Projects Listener Error:", err);
-        setAuthError("讀取專案失敗: " + err.message);
-      });
+      }, (err) => handleFirestoreError(err, '專案'));
 
+      // Listen to Users (System Roles)
       const usersRef = collection(db, 'artifacts', currentAppId, 'public', 'data', 'users');
       const unsubUsers = onSnapshot(usersRef, (snapshot) => {
         const loadedUsers = snapshot.docs.map(doc => ({ firestoreId: doc.id, ...doc.data() }));
-        if (loadedUsers.length === 0) {
-          addDoc(usersRef, { ...SUPER_ADMIN, password: DEFAULT_ADMIN_PASS });
-        } else {
-          setUsers(loadedUsers);
-        }
-      }, (err) => {
-        console.error("Users Listener Error:", err);
-        setAuthError("讀取使用者失敗: " + err.message);
-      });
+        setUsers(loadedUsers);
+      }, (err) => handleFirestoreError(err, '使用者'));
 
       return () => { unsubProjects(); unsubUsers(); };
     } catch (e) {
-      setAuthError("初始化監聽失敗: " + e.message);
+      setAuthError("監聽失敗: " + e.message);
     }
   }, [firebaseUser]);
 
+  // --- 3. Sync Firebase User with Firestore Roles ---
+  useEffect(() => {
+    if (firebaseUser && users.length > 0) {
+      // 1. 檢查是否為超級管理員 (Hardcoded email)
+      if (SUPER_ADMIN_EMAILS.includes(firebaseUser.email)) {
+        setCurrentUser({ 
+          email: firebaseUser.email, 
+          username: firebaseUser.displayName || 'Admin', 
+          photoURL: firebaseUser.photoURL,
+          role: 'admin' 
+        });
+      } else {
+        // 2. 檢查 Firestore 中是否有設定此 Email 的權限
+        const foundUser = users.find(u => u.email === firebaseUser.email);
+        if (foundUser) {
+          setCurrentUser({ 
+            ...foundUser, 
+            username: firebaseUser.displayName || foundUser.username,
+            photoURL: firebaseUser.photoURL
+          });
+        } else {
+          // 3. 若無資料，暫時視為訪客 (Guest) 或自動註冊為普通 user
+          // 這裡我們自動註冊為 'user' 方便大家使用，但在嚴格系統中應設為 'guest'
+          const newUser = { 
+            email: firebaseUser.email, 
+            username: firebaseUser.displayName || 'User', 
+            role: 'user',
+            createdAt: new Date().toISOString()
+          };
+          // 自動寫入資料庫 (可選)
+          const usersRef = collection(db, 'artifacts', currentAppId, 'public', 'data', 'users');
+          addDoc(usersRef, newUser).catch(console.error);
+          
+          setCurrentUser(newUser);
+        }
+      }
+    } else {
+      setCurrentUser(null);
+    }
+  }, [firebaseUser, users]);
+
+  // --- Notification Logic ---
   const getDaysRemaining = (endDateStr) => {
     if (!endDateStr) return -999;
     const end = new Date(endDateStr);
@@ -316,7 +247,7 @@ const App = () => {
       if (p.hasWarranty && p.warrantyEnd) {
         const days = getDaysRemaining(p.warrantyEnd);
         if (days <= 180 && days > -30) {
-           newLogs.push({ id: p.id + days, message: `[系統自動通知] 專案 ${p.id} 保固即將於 ${days} 天後到期。已發信至 Jason@triotechno.com`, time: new Date().toLocaleTimeString() });
+           newLogs.push({ id: p.id + days, message: `[系統自動通知] 專案 ${p.id} 保固即將於 ${days} 天後到期。`, time: new Date().toLocaleTimeString() });
         }
       }
     });
@@ -325,29 +256,29 @@ const App = () => {
 
   useEffect(() => { setListPage(1); }, [searchTerm, filterEng, filterStatus]);
 
-  const handleLogin = (e) => {
-    e.preventDefault();
-    if (!captchaValid) return alert('驗證碼錯誤');
-    const foundUser = users.find(u => (u.username === loginUser || u.email === loginUser) && u.password === loginPass);
-    if (foundUser) {
-      if (foundUser.isFirstLogin) { setCurrentUser(foundUser); setIsLoginView(false); setIsChangePasswordView(true); } 
-      else { setCurrentUser(foundUser); setIsLoginView(false); setActiveTab('list'); }
-    } else alert('帳號或密碼錯誤');
-  };
-
-  const handleChangePassword = async (e) => {
-    e.preventDefault();
-    if (newPassword !== confirmPassword) return alert('兩次輸入的密碼不一致');
-    if (!validateWeakPassword(newPassword)) return alert('密碼強度不足');
+  // --- Google Login Handler ---
+  const handleGoogleLogin = async () => {
+    const provider = new GoogleAuthProvider();
     try {
-      const userRef = doc(db, 'artifacts', currentAppId, 'public', 'data', 'users', currentUser.firestoreId);
-      await updateDoc(userRef, { password: newPassword, isFirstLogin: false });
-      alert('密碼修改成功'); setCurrentUser({ ...currentUser, isFirstLogin: false }); setIsChangePasswordView(false); setActiveTab('list');
-    } catch (err) { alert('修改失敗: ' + err.message); }
+      await signInWithPopup(auth, provider);
+      // Login successful, useEffect will handle user state
+    } catch (error) {
+      console.error("Login Failed:", error);
+      alert("登入失敗: " + error.message);
+    }
   };
 
-  const handleLogout = () => { setCurrentUser(null); setIsLoginView(true); setLoginUser(''); setLoginPass(''); setCaptchaValid(false); };
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentUser(null);
+      setActiveTab('list');
+    } catch (error) {
+      console.error("Logout Error:", error);
+    }
+  };
 
+  // --- Form & Data Logic ---
   const initialFormState = {
     projectYear: '114', status: '進行中', invoiceDate: new Date().toISOString().split('T')[0], invoiceNumber: '', paymentDate: '', paymentBank: '',
     name: '', type: '新專案', amount: '', school: '', engineer: '', customEngineer: '',
@@ -413,17 +344,26 @@ const App = () => {
     } catch(err) { console.error(err); alert("儲存失敗: " + err.message); }
   };
 
+  // --- Admin: Add User Email ---
   const [newUserEmail, setNewUserEmail] = useState('');
   const handleCreateUser = async (e) => {
     e.preventDefault();
     if (users.find(u => u.email === newUserEmail)) return alert('Email 已存在');
-    const randomPass = generateRandomPassword();
-    const newUser = { username: newUserEmail, email: newUserEmail, password: randomPass, role: 'user', isFirstLogin: true };
+    
+    // Google Login 不需要密碼，我們只需要儲存 "這個 Email 是 user/admin"
+    const newUser = { 
+      email: newUserEmail, 
+      username: newUserEmail.split('@')[0], 
+      role: 'user', 
+      createdAt: new Date().toISOString() 
+    };
     try {
       const colRef = collection(db, 'artifacts', currentAppId, 'public', 'data', 'users');
       await addDoc(colRef, newUser);
-      window.location.href = `mailto:${newUserEmail}?subject=${encodeURIComponent("【專案管理系統】您的帳號已建立")}&body=${encodeURIComponent(`Hi,\n\n您的帳號已建立。\n帳號: ${newUserEmail}\n密碼: ${randomPass}\n\n請登入後立即修改密碼。`)}`;
-      setNewUserEmail(''); alert(`已建立並呼叫郵件軟體。`);
+      
+      // 寄信通知 (此時只通知已開通權限，不需給密碼)
+      window.location.href = `mailto:${newUserEmail}?subject=${encodeURIComponent("【專案管理系統】權限已開通")}&body=${encodeURIComponent(`Hi,\n\n您的 Google 帳號 (${newUserEmail}) 已被加入專案管理系統。\n請直接使用 Google 登入即可。`)}`;
+      setNewUserEmail(''); alert(`已加入權限清單並呼叫郵件軟體。`);
     } catch(err) { alert("建立失敗: " + err.message); }
   };
 
@@ -469,50 +409,34 @@ const App = () => {
     }
   };
 
-  // --- RENDER ---
-  if (isLoginView) return (
+  // --- RENDER: Login View ---
+  if (!firebaseUser) return (
     <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4 font-sans">
-      <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md border border-stone-200">
+      <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md border border-stone-200 text-center">
         <div className="flex justify-center mb-6"><div className="bg-amber-600 p-3 rounded-full"><DollarSign className="w-8 h-8 text-white" /></div></div>
         <h1 className="text-2xl font-bold text-center text-stone-700 mb-6">專案管理系統</h1>
         {authError ? (
-          <div className="bg-red-50 text-red-600 p-4 rounded-lg mb-4 text-sm border border-red-200 flex items-start gap-2">
+          <div className="bg-red-50 text-red-600 p-4 rounded-lg mb-4 text-sm border border-red-200 flex items-start gap-2 text-left">
             <AlertCircle className="w-5 h-5 flex-shrink-0" />
-            <div>
-              <p className="font-bold">資料庫連線失敗</p>
-              <p>{authError}</p>
-              <p className="mt-2 text-xs text-stone-500">請確認 Firebase Console &gt; Authentication &gt; Sign-in method 中的「Anonymous」已啟用。</p>
-            </div>
+            <div><p className="font-bold">連線失敗</p><p>{authError}</p></div>
           </div>
-        ) : !firebaseUser ? (
-          <div className="text-center text-stone-500 py-4">連線到雲端資料庫中...</div>
         ) : (
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div><label className="block text-sm font-medium text-stone-600 mb-1">帳號 / Email</label><input type="text" value={loginUser} onChange={e => setLoginUser(e.target.value)} className="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-amber-500" required /></div>
-            <div className="relative"><label className="block text-sm font-medium text-stone-600 mb-1">密碼</label><input type={showPass ? "text" : "password"} value={loginPass} onChange={e => setLoginPass(e.target.value)} className="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-amber-500" required /><button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-2 top-8 text-gray-400">{showPass ? <EyeOff size={16}/> : <Eye size={16}/>}</button></div>
-            <div><label className="block text-sm font-medium text-stone-600 mb-1">驗證碼</label><Captcha onVerify={setCaptchaValid} /></div>
-            <button type="submit" className="w-full bg-amber-600 text-white py-2 rounded hover:bg-amber-700 transition font-medium">登入系統</button>
-          </form>
+          <div className="space-y-4">
+            <button 
+              onClick={handleGoogleLogin}
+              className="w-full flex items-center justify-center gap-3 bg-white border border-gray-300 text-gray-700 py-3 rounded-lg hover:bg-gray-50 transition shadow-sm font-medium"
+            >
+              <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5"/>
+              使用 Google 帳號登入
+            </button>
+            <p className="text-xs text-gray-400 mt-4">僅限授權人員使用</p>
+          </div>
         )}
-        <div className="mt-4 text-center text-xs text-stone-400">預設管理員: triotechno / tri57666</div>
       </div>
     </div>
   );
 
-  if (isChangePasswordView) return (
-    <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4 font-sans">
-      <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md border-t-4 border-amber-500">
-        <h2 className="text-xl font-bold text-stone-700 mb-2 flex items-center gap-2"><Key className="w-5 h-5 text-amber-600" /> 修改密碼</h2>
-        <p className="text-sm text-stone-500 mb-6">首次登入請修改預設密碼。</p>
-        <form onSubmit={handleChangePassword} className="space-y-4">
-          <div><label className="block text-sm font-medium text-stone-600 mb-1">新密碼</label><input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-amber-500" required /></div>
-          <div><label className="block text-sm font-medium text-stone-600 mb-1">確認新密碼</label><input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-amber-500" required /></div>
-          <button type="submit" className="w-full bg-stone-700 text-white py-2 rounded hover:bg-stone-800 transition font-medium">確認修改並登入</button>
-        </form>
-      </div>
-    </div>
-  );
-
+  // --- RENDER: Main App ---
   return (
     <div className="min-h-screen bg-stone-50 text-gray-800 font-sans">
       <nav className="bg-amber-700 text-white shadow-lg sticky top-0 z-50">
@@ -525,7 +449,11 @@ const App = () => {
             <button onClick={() => setActiveTab('stats')} className={`px-3 py-2 rounded text-sm ${activeTab === 'stats' ? 'bg-white text-amber-800' : 'hover:bg-amber-600'}`}><BarChart2 className="w-4 h-4 inline mr-1"/> 統計</button>
             {currentUser?.role === 'admin' && <button onClick={() => setActiveTab('admin')} className={`px-3 py-2 rounded text-sm ${activeTab === 'admin' ? 'bg-white text-amber-800' : 'bg-red-800 hover:bg-red-700'}`}><Users className="w-4 h-4 inline mr-1"/> 帳號</button>}
             <div className="w-px h-6 bg-amber-500 mx-2"></div>
-            <div className="flex items-center gap-2 text-sm"><span className="opacity-80">Hi, {currentUser.username}</span><button onClick={handleLogout} className="p-1 hover:bg-amber-600 rounded"><LogOut className="w-4 h-4" /></button></div>
+            <div className="flex items-center gap-2 text-sm">
+              {currentUser?.photoURL ? <img src={currentUser.photoURL} className="w-6 h-6 rounded-full" alt=""/> : <div className="w-6 h-6 bg-amber-500 rounded-full flex items-center justify-center text-xs">{currentUser?.username?.[0]}</div>}
+              <span className="opacity-80 hidden sm:inline">{currentUser?.username}</span>
+              <button onClick={handleLogout} className="p-1 hover:bg-amber-600 rounded" title="登出"><LogOut className="w-4 h-4" /></button>
+            </div>
           </div>
         </div>
       </nav>
@@ -638,17 +566,17 @@ const App = () => {
           <div className="max-w-2xl mx-auto bg-white rounded-xl shadow p-6 border border-stone-200">
              <h2 className="text-xl font-bold mb-4 flex items-center gap-2"><Users/> 使用者帳號管理</h2>
              <div className="bg-stone-100 p-4 rounded mb-6">
-               <h3 className="font-bold mb-2 text-sm text-stone-600">新增使用者</h3>
-               <p className="text-xs text-gray-500 mb-2">新增後系統會自動呼叫郵件軟體寄出帳號密碼通知。</p>
-               <form onSubmit={handleCreateUser} className="flex gap-2"><input type="email" placeholder="請輸入 Email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} className="flex-1 border p-2 rounded" required /><button type="submit" className="bg-stone-700 text-white px-4 py-2 rounded hover:bg-stone-800 flex items-center gap-2"><UserPlus size={16}/> 建立並寄信</button></form>
+               <h3 className="font-bold mb-2 text-sm text-stone-600">新增使用者權限</h3>
+               <p className="text-xs text-gray-500 mb-2">請輸入使用者的 Google Email，系統將會允許該 Email 登入。</p>
+               <form onSubmit={handleCreateUser} className="flex gap-2"><input type="email" placeholder="請輸入 Google Email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} className="flex-1 border p-2 rounded" required /><button type="submit" className="bg-stone-700 text-white px-4 py-2 rounded hover:bg-stone-800 flex items-center gap-2"><UserPlus size={16}/> 加入並通知</button></form>
              </div>
              <div>
-               <h3 className="font-bold mb-2 text-sm text-stone-600">現有使用者列表</h3>
+               <h3 className="font-bold mb-2 text-sm text-stone-600">已授權使用者列表</h3>
                <table className="w-full text-sm text-left">
-                 <thead className="bg-stone-50"><tr><th className="p-2">帳號/Email</th><th className="p-2">權限</th><th className="p-2">狀態</th></tr></thead>
+                 <thead className="bg-stone-50"><tr><th className="p-2">Email</th><th className="p-2">權限</th><th className="p-2">加入時間</th></tr></thead>
                  <tbody>
                    {paginatedUsers.map((u, idx) => (
-                     <tr key={idx} className="border-b"><td className="p-2">{u.username}</td><td className="p-2"><span className={`px-2 py-0.5 rounded text-xs ${u.role === 'admin' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>{u.role}</span></td><td className="p-2 text-gray-500">{u.isFirstLogin ? '未啟用' : '正常'}</td></tr>
+                     <tr key={idx} className="border-b"><td className="p-2">{u.email}</td><td className="p-2"><span className={`px-2 py-0.5 rounded text-xs ${u.role === 'admin' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>{u.role}</span></td><td className="p-2 text-gray-500">{u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '-'}</td></tr>
                    ))}
                  </tbody>
                </table>
@@ -686,5 +614,8 @@ const App = () => {
     </div>
   );
 };
+
+// Wrap with ErrorBoundary
+const App = () => <ErrorBoundary><AppContent /></ErrorBoundary>;
 
 export default App;
